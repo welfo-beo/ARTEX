@@ -1094,6 +1094,19 @@ func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker
 	return e.runIntent(ctx, t, name, worker, intent, token, "", "")
 }
 
+// intentContextFor layers the worker's model preference onto the shared task
+// execution context. Only task lifetime/cancellation is cached: a planner or
+// another intent must never inherit this run's model pin.
+func (e *Engine) intentContextFor(parent context.Context, t *Task) context.Context {
+	ctx := e.clockCtx(e.execContextFor(parent, t.ID), t, false)
+	if t.LLMRotate {
+		if head, ok := t.nextRotatedProfile(); ok {
+			ctx = withLLMProfilePin(ctx, head)
+		}
+	}
+	return ctx
+}
+
 // runIntent executes and fully settles one already-claimed (state=running) intent.
 // Both the pool worker loop (via runWorkerStep) and the human-message handler (via
 // runDetachedIntent, a dedicated goroutine outside the worker pool) call it, so the
@@ -1106,19 +1119,11 @@ func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker
 // while the worker is busy, and every intent state write below is fenced on it,
 // so a worker whose claim was taken over cannot overwrite the new claimer.
 func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *agent.Worker, intent *db.Node, token, requestID, message string) bool {
-	// Per-intent LLM rotation (#85): each claimed worker intent runs on the
-	// next chain head. The pin travels through the run context into the
-	// provider resolver; non-worker roles and failover keep the active head.
-	if t.LLMRotate {
-		if head, ok := t.nextRotatedProfile(); ok {
-			ctx = withLLMProfilePin(ctx, head)
-		}
-	}
 	hasChatMessage := message != ""
 	e.stampFirstRun(t) // first real execution → stamp first_run_at + compute the deadline (only for tasks with a timeout)
 	e.touch(t.ID)
 	emit := func(r db.Activity) { e.emitActivity(t, r) }
-	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; carries the task deadline
+	ectx := e.intentContextFor(ctx, t) // cancellable by Pause; carries the task deadline and this intent's pin
 	if ectx.Err() != nil || e.IsDeleting(t.ID) {
 		if err := t.Store.SettleIntentClaim(intent.ID, token, "open"); err != nil {
 			log.Printf("[worker %s] task %s intent #%d claim rollback failed: %v", name, t.ID, intent.ID, err)
