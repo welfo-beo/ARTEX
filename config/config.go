@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -156,7 +157,7 @@ func SkillDir() (string, error) {
 
 // PostgresDSN resolves the connection string with precedence:
 //
-//	env ARTEX_PG_DSN  >  config file (database.dsn, or assembled from fields)
+//	env ARTEX_PG_DSN > env ARTEX_PG_* components > config file (dsn or fields)
 //
 // There is NO built-in fallback: when neither source supplies a database config,
 // it returns an error naming the config path it inspected, so startup fails loudly
@@ -165,6 +166,11 @@ func SkillDir() (string, error) {
 func PostgresDSN() (dsn, source string, err error) {
 	if v := strings.TrimSpace(os.Getenv("ARTEX_PG_DSN")); v != "" {
 		return v, "environment variable ARTEX_PG_DSN", nil
+	}
+	if db, configured, err := databaseFromEnv(); err != nil {
+		return "", "", err
+	} else if configured {
+		return db.buildDSN(), "environment variables ARTEX_PG_*", nil
 	}
 	c, err := Load()
 	if err != nil {
@@ -177,7 +183,32 @@ func PostgresDSN() (dsn, source string, err error) {
 	if db.Host != "" || db.DBName != "" || db.User != "" {
 		return db.buildDSN(), "config file " + Path() + " (database fields)", nil
 	}
-	return "", "", fmt.Errorf("no database config found: the environment variable ARTEX_PG_DSN is not set, and config file %s provides no database (dsn or host/user/dbname). Create the config file or set the environment variable and retry", Path())
+	return "", "", fmt.Errorf("no database config found: ARTEX_PG_DSN and ARTEX_PG_* components are not set, and config file %s provides no database (dsn or host/user/dbname). Create the config file or set the environment variables and retry", Path())
+}
+
+// Environment components form one standalone configuration, just like an
+// explicit DSN. Never merge credentials from a different config file endpoint.
+func databaseFromEnv() (Database, bool, error) {
+	d := Database{
+		Host: os.Getenv("ARTEX_PG_HOST"), User: os.Getenv("ARTEX_PG_USER"),
+		Password: os.Getenv("ARTEX_PG_PASSWORD"), DBName: os.Getenv("ARTEX_PG_DBNAME"),
+		SSLMode: os.Getenv("ARTEX_PG_SSLMODE"),
+	}
+	port := os.Getenv("ARTEX_PG_PORT")
+	if d.Host == "" && d.User == "" && d.DBName == "" && d.Password == "" && d.SSLMode == "" && port == "" {
+		return d, false, nil
+	}
+	if d.Host == "" && d.User == "" && d.DBName == "" {
+		return d, false, errors.New("database environment components require ARTEX_PG_HOST, ARTEX_PG_USER, or ARTEX_PG_DBNAME")
+	}
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return d, false, errors.New("ARTEX_PG_PORT must be an integer between 1 and 65535")
+		}
+		d.Port = n
+	}
+	return d, true, nil
 }
 
 func (d Database) buildDSN() string {
@@ -195,7 +226,7 @@ func (d Database) buildDSN() string {
 	}
 	u := url.URL{
 		Scheme: "postgres",
-		Host:   host + ":" + strconv.Itoa(port),
+		Host:   net.JoinHostPort(host, strconv.Itoa(port)),
 		Path:   "/" + d.DBName,
 	}
 	if d.User != "" {

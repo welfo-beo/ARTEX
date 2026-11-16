@@ -370,7 +370,7 @@ runtime supports it.
 
 ## Configuration
 
-**Database** (`config.json`, or the `ARTEX_PG_DSN` environment variable):
+**Database** (`config.json`, or environment variables):
 
 ```json
 {
@@ -381,6 +381,21 @@ runtime supports it.
   }
 }
 ```
+
+Connection settings use this precedence: `ARTEX_PG_DSN`, then the component
+environment variables `ARTEX_PG_HOST`, `ARTEX_PG_PORT`, `ARTEX_PG_USER`,
+`ARTEX_PG_PASSWORD`, `ARTEX_PG_DBNAME`, and `ARTEX_PG_SSLMODE`, then `config.json`
+(`database.dsn` or the fields above). Component environment variables form a complete
+configuration and do not merge with the file. Set at least one of host, user, or
+database name; omitted host/port/SSL mode default to `127.0.0.1`/`5432`/`disable`.
+There is no database fallback when no source is configured.
+
+Docker Compose passes the raw `POSTGRES_PASSWORD` to both PostgreSQL and ARTEX.
+ARTEX encodes the password when constructing its connection URL, so characters
+such as `#`, `/`, `?`, and `%` do not change it. Do not URL-encode the password in
+`.env`; quote it according to Compose `.env` syntax when needed (for example,
+single quotes preserve a literal `$`). A directly supplied `ARTEX_PG_DSN` must
+already use URL-encoded credentials.
 
 **LLM**: `export ANTHROPIC_API_KEY=sk-...` (or `OPENAI_API_KEY`), or configure it in the UI's
 "LLM Configuration" page, which can also add a local Ollama server as a keyless provider (format

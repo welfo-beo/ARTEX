@@ -55,6 +55,7 @@ func TestNewAppliesSecretScrubOption(t *testing.T) {
 		t.Skipf("no manager: %v", err)
 	}
 	t.Cleanup(func() { m.Close() })
+	t.Setenv("ARTEX_PG_PASSWORD", "scrub-probe")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -62,5 +63,8 @@ func TestNewAppliesSecretScrubOption(t *testing.T) {
 
 	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("OPENAI_API_KEY") != "" {
 		t.Fatal("New did not apply WithSecretScrub: the secrets are still in the environment")
+	}
+	if os.Getenv("ARTEX_PG_PASSWORD") != "" {
+		t.Fatal("New did not scrub the database component password")
 	}
 }
