@@ -23,22 +23,39 @@ type ArchiveSnapshot struct {
 }
 
 type ArchiveExchange struct {
-	ID          string `json:"id"`
+	ID          string                 `json:"id"`
+	TS          int64                  `json:"ts"`
+	Host        string                 `json:"host"`
+	Method      string                 `json:"method"`
+	URLTemplate string                 `json:"url_template"`
+	URL         string                 `json:"url"`
+	Status      int                    `json:"status"`
+	ContentType string                 `json:"content_type"`
+	ReqLen      int                    `json:"req_len"`
+	RespLen     int                    `json:"resp_len"`
+	ReqHead     string                 `json:"req_head"`
+	ReqBody     []byte                 `json:"req_body,omitempty"`
+	ReqBlob     string                 `json:"req_blob,omitempty"`
+	RespHead    string                 `json:"resp_head"`
+	RespBody    []byte                 `json:"resp_body,omitempty"`
+	RespBlob    string                 `json:"resp_blob,omitempty"`
+	Messages    []ArchiveStreamMessage `json:"messages,omitempty"`
+}
+
+// ArchiveStreamMessage preserves the wire payload and stream metadata, including
+// payloads spilled to the content-addressed blob store.
+type ArchiveStreamMessage struct {
+	Seq         int64  `json:"seq"`
 	TS          int64  `json:"ts"`
-	Host        string `json:"host"`
-	Method      string `json:"method"`
-	URLTemplate string `json:"url_template"`
-	URL         string `json:"url"`
-	Status      int    `json:"status"`
-	ContentType string `json:"content_type"`
-	ReqLen      int    `json:"req_len"`
-	RespLen     int    `json:"resp_len"`
-	ReqHead     string `json:"req_head"`
-	ReqBody     []byte `json:"req_body,omitempty"`
-	ReqBlob     string `json:"req_blob,omitempty"`
-	RespHead    string `json:"resp_head"`
-	RespBody    []byte `json:"resp_body,omitempty"`
-	RespBlob    string `json:"resp_blob,omitempty"`
+	Direction   string `json:"direction"`
+	Kind        int    `json:"kind"`
+	Event       string `json:"event,omitempty"`
+	EventID     string `json:"event_id,omitempty"`
+	Retry       int    `json:"retry,omitempty"`
+	Size        int    `json:"size"`
+	Payload     []byte `json:"payload,omitempty"`
+	PayloadBlob string `json:"payload_blob,omitempty"`
+	Truncated   bool   `json:"truncated,omitempty"`
 }
 
 // ExportHosts writes an exact-host snapshot to dir. It holds the traffic writer
@@ -66,7 +83,7 @@ FROM exchanges WHERE host IN (`+strings.Join(placeholders, ",")+`) ORDER BY ts,i
 		return 0, err
 	}
 	defer rows.Close()
-	snapshot := ArchiveSnapshot{Version: 1}
+	snapshot := ArchiveSnapshot{Version: 2}
 	blobs := map[string]struct{}{}
 	for rows.Next() {
 		var item ArchiveExchange
@@ -95,6 +112,15 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 		for _, hash := range []string{item.ReqBlob, item.RespBlob} {
 			if hash != "" {
 				blobs[hash] = struct{}{}
+			}
+		}
+		item.Messages, err = t.archiveStreamMessages(item.ID)
+		if err != nil {
+			return 0, err
+		}
+		for _, message := range item.Messages {
+			if message.PayloadBlob != "" {
+				blobs[message.PayloadBlob] = struct{}{}
 			}
 		}
 		snapshot.Exchanges = append(snapshot.Exchanges, item)
@@ -127,6 +153,28 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 	return int64(len(snapshot.Exchanges)), nil
 }
 
+func (t *Traffic) archiveStreamMessages(exchangeID string) ([]ArchiveStreamMessage, error) {
+	rows, err := t.db.Query(`SELECT seq,ts,direction,kind,event,event_id,retry,size,payload,payload_blob,truncated
+FROM stream_messages WHERE exchange_id=? ORDER BY seq`, exchangeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var messages []ArchiveStreamMessage
+	for rows.Next() {
+		var message ArchiveStreamMessage
+		var blob sql.NullString
+		var truncated int
+		if err := rows.Scan(&message.Seq, &message.TS, &message.Direction, &message.Kind,
+			&message.Event, &message.EventID, &message.Retry, &message.Size, &message.Payload, &blob, &truncated); err != nil {
+			return nil, err
+		}
+		message.PayloadBlob, message.Truncated = blob.String, truncated != 0
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
+}
+
 // ImportArchive imports only missing exchange IDs. Current hot rows always win,
 // and repeated restore attempts are safe after a partial external failure.
 func (t *Traffic) ImportArchive(dir string) (int64, error) {
@@ -144,7 +192,7 @@ func (t *Traffic) ImportArchive(dir string) (int64, error) {
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
 		return 0, err
 	}
-	if snapshot.Version != 1 {
+	if snapshot.Version != 1 && snapshot.Version != 2 {
 		return 0, fmt.Errorf("unsupported traffic archive version %d", snapshot.Version)
 	}
 	t.wmu.Lock()
@@ -196,6 +244,19 @@ VALUES(?,?,?,?,?,?,?)`, item.ID, item.ReqHead, item.ReqBody, nullIfEmpty(item.Re
 		for _, hash := range []string{item.ReqBlob, item.RespBlob} {
 			if hash != "" {
 				if _, err := tx.Exec(`INSERT OR IGNORE INTO blob_refs(hash,exchange_id) VALUES(?,?)`, hash, item.ID); err != nil {
+					return imported, err
+				}
+			}
+		}
+		for _, message := range item.Messages {
+			if _, err := tx.Exec(`INSERT INTO stream_messages(exchange_id,seq,ts,direction,kind,event,event_id,retry,size,payload,payload_blob,truncated)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, message.Seq, message.TS, message.Direction, message.Kind,
+				message.Event, message.EventID, message.Retry, message.Size, message.Payload,
+				nullIfEmpty(message.PayloadBlob), boolInt(message.Truncated)); err != nil {
+				return imported, err
+			}
+			if message.PayloadBlob != "" {
+				if _, err := tx.Exec(`INSERT OR IGNORE INTO blob_refs(hash,exchange_id) VALUES(?,?)`, message.PayloadBlob, item.ID); err != nil {
 					return imported, err
 				}
 			}
