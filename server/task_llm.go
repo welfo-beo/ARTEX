@@ -180,7 +180,8 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 // currentFor resolves like current, honoring a per-run profile pin set by the
 // engine for per-intent rotation (#85). A pin is only a dispatch preference:
 // the chain must still be in a ready state (an exhausted chain with no active
-// head stays exhausted) and the pinned id must belong to the task's chain.
+// head stays exhausted) and the pinned entry must still be ready in that same
+// chain snapshot. Once it is exhausted, the active head takes over.
 func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, error) {
 	taskNum, err := parseTaskID(r.taskID)
 	if err != nil {
@@ -206,7 +207,7 @@ func (r *taskLLMRuntime) currentFor(ctx context.Context) (taskLLMSelection, erro
 		}
 		sel.profileID = *pt.ActiveLLMProfileID
 		if pin, ok := llmProfilePinFrom(ctx); ok && pin != sel.profileID {
-			for _, id := range pt.LLMProfileIDs {
+			for _, id := range pt.LLMReadyProfileIDs {
 				if id == pin {
 					sel.profileID = pin
 					break

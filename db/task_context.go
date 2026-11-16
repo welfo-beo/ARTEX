@@ -76,6 +76,7 @@ func applyTaskLLMContext(
 	t.ActiveLLMProfileID = activeProfileID
 	t.LLMChainRevision = revision
 	t.LLMProfileIDs = make([]int64, 0, len(chain))
+	t.LLMReadyProfileIDs = make([]int64, 0, len(chain))
 	t.LLMFailoverState = "default"
 	t.LLMFailoverReason = ""
 	var latest *TaskLLMProfile
@@ -83,6 +84,9 @@ func applyTaskLLMContext(
 	for i := range chain {
 		entry := chain[i]
 		t.LLMProfileIDs = append(t.LLMProfileIDs, entry.ProfileID)
+		if entry.Status == "ready" {
+			t.LLMReadyProfileIDs = append(t.LLMReadyProfileIDs, entry.ProfileID)
+		}
 		if t.ActiveLLMProfileID != nil && entry.ProfileID == *t.ActiveLLMProfileID && entry.Status == "ready" {
 			activeReady = true
 		}
