@@ -28,7 +28,10 @@ type Task struct {
 	LLMProfileID  *int64     `json:"llm_profile_id,omitempty"`
 	// Task-level ordered LLM chain. LLMProfileID remains the compatibility alias
 	// for ActiveLLMProfileID while older API clients still send one profile id.
-	LLMProfileIDs      []int64 `json:"llm_profile_ids,omitempty"`
+	LLMProfileIDs []int64 `json:"llm_profile_ids,omitempty"`
+	// Ready IDs come from the same snapshot as the active cursor and revision.
+	// Per-run model preferences must not select exhausted chain entries.
+	LLMReadyProfileIDs []int64 `json:"-"`
 	ActiveLLMProfileID *int64  `json:"active_llm_profile_id,omitempty"`
 	LLMChainRevision   int64   `json:"-"`
 	LLMFailoverState   string  `json:"llm_failover_state,omitempty"`
@@ -245,10 +248,11 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		Name: opts.Name, CategoryID: opts.CategoryID, CategoryName: categoryName,
 		Description: description, Goal: goal, ExplorationID: expID,
 		LLMProfileID: active, ActiveLLMProfileID: active,
-		LLMProfileIDs:  append([]int64(nil), opts.LLMProfileIDs...),
-		SourceTaskIDs:  append([]int64(nil), opts.SourceTaskIDs...),
-		CompanyIDs:     append([]int64(nil), opts.CompanyIDs...),
-		TimeoutSeconds: opts.TimeoutSeconds, PlanHeartbeatSeconds: opts.PlanHeartbeatSeconds,
+		LLMProfileIDs:      append([]int64(nil), opts.LLMProfileIDs...),
+		LLMReadyProfileIDs: append([]int64(nil), opts.LLMProfileIDs...),
+		SourceTaskIDs:      append([]int64(nil), opts.SourceTaskIDs...),
+		CompanyIDs:         append([]int64(nil), opts.CompanyIDs...),
+		TimeoutSeconds:     opts.TimeoutSeconds, PlanHeartbeatSeconds: opts.PlanHeartbeatSeconds,
 		PlanQuietMode:   quietMode,
 		CoverageEnabled: coverageEnabled,
 	}
