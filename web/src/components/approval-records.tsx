@@ -864,7 +864,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
 
   React.useEffect(() => {
     void load();
-    const stopPolling = setVisibleInterval(() => void load(), 5000);
+    const stopPolling = setVisibleInterval(load, 5000);
     return () => {
       request.current++;
       stopPolling();
